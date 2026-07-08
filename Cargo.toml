@@ -12,7 +12,7 @@ repository = "https://github.com/qdrant/qdrant"
 license = "Apache-2.0"
 edition = "2024"
 rust-version = "1.94"
-default-run = "qdrant"
+default-run = "xqdrant"
 
 [lints]
 workspace = true
@@ -316,6 +316,10 @@ walkdir = "2.5.0"
 
 [patch.crates-io]
 tonic = { git = "https://github.com/qdrant/tonic", branch = "v0.14.6-qdrant" }
+
+[[bin]]
+name = "xqdrant"
+path = "src/main.rs"
 
 [[bin]]
 name = "schema_generator"

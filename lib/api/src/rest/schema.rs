@@ -806,9 +806,17 @@ pub struct DimsFocus {
 
     /// The maximum number of candidates to preselect with the full-vector search before re-scoring.
     ///
-    /// If not specified, the `limit` value is used.
+    /// If not specified, the `limit` value is used. Ignored when `masked` is true.
     #[validate(range(max = 16_384))] // artificial maximum, to avoid too expensive query.
     pub candidates_limit: Option<usize>,
+
+    /// Compute the masked distance (over `dims` only) directly inside the index (HNSW)
+    /// traversal, instead of preselecting full-vector candidates and re-scoring them.
+    ///
+    /// This is a real per-comparison speedup, but results are approximate since the index
+    /// graph was built for full vectors. Defaults to false.
+    #[serde(default)]
+    pub masked: bool,
 }
 
 /// Options for including per-dimension score explanations into the search response.

@@ -78,6 +78,10 @@ impl<'py> IntoPyObject<'py> for PyQuery {
                 using,
             },
 
+            QueryEnum::NearestMasked(_, _) => {
+                unimplemented!("masked focus search is not exposed to the edge Python bindings")
+            }
+
             QueryEnum::RecommendBestScore(NamedQuery { query, using }) => {
                 PyQueryInterface::RecommendBestScore {
                     query: PyRecommendQuery(query),
@@ -129,6 +133,9 @@ impl Repr for PyQuery {
         let (repr, query, using): (_, &dyn Repr, _) = match &self.0 {
             QueryEnum::Nearest(NamedQuery { query, using }) => {
                 ("Nearest", PyNamedVectorInternal::wrap_ref(query), using)
+            }
+            QueryEnum::NearestMasked(NamedQuery { query, using }, _) => {
+                ("NearestMasked", PyNamedVectorInternal::wrap_ref(query), using)
             }
             QueryEnum::RecommendBestScore(NamedQuery { query, using }) => (
                 "RecommendBestScore",

@@ -216,6 +216,12 @@ pub struct DimsFocus {
     pub dims: Vec<u32>,
     /// Maximum number of candidates to preselect using nearest neighbors.
     pub candidates_limit: Option<usize>,
+    /// When true, compute the masked distance (over `dims` only) directly inside the HNSW
+    /// traversal instead of preselecting full-vector candidates and re-scoring them.
+    ///
+    /// This is a real per-comparison speedup, but the results are approximate: the index
+    /// graph was built for full vectors, so `candidates_limit` no longer applies.
+    pub masked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -528,7 +534,17 @@ impl VectorQuery<VectorInternal> {
                 let DimsFocus {
                     dims,
                     candidates_limit,
+                    masked,
                 } = focus;
+
+                // Masked focus computes the reduced distance inside the index traversal,
+                // so it is a plain nearest-neighbor scoring query (no preselect + rescore).
+                if masked {
+                    return Ok(ScoringQuery::Vector(QueryEnum::NearestMasked(
+                        NamedQuery::new(nearest, using),
+                        dims,
+                    )));
+                }
 
                 return Ok(ScoringQuery::DimsFocus(DimsFocusInternal {
                     vector: nearest,
@@ -825,6 +841,14 @@ impl CollectionQueryRequest {
     /// Score decomposition per dimension is only defined for nearest neighbor scoring
     /// (optionally focused on a subset of dimensions) against dense vectors.
     fn validate_dims_explained_support(query: Option<&ScoringQuery>) -> CollectionResult<()> {
+        // Masked focus search scores inside the index traversal and does not retrieve the
+        // full vectors needed to decompose the score, so explanations are not available.
+        if let Some(ScoringQuery::Vector(QueryEnum::NearestMasked(_, _))) = query {
+            return Err(CollectionError::bad_request(
+                "with_dims_explained cannot be combined with masked focus search.",
+            ));
+        }
+
         let supported = match query {
             Some(ScoringQuery::Vector(QueryEnum::Nearest(nearest))) => {
                 matches!(nearest.query, VectorInternal::Dense(_))

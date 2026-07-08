@@ -25,6 +25,7 @@ use crate::spaces::simple::{CosineMetric, DotProductMetric, EuclidMetric, Manhat
 use crate::types::Distance;
 use crate::vector_storage::query::NaiveFeedbackQuery;
 use crate::vector_storage::query_scorer::QueryScorer;
+use crate::vector_storage::query_scorer::masked_metric_query_scorer::MaskedMetricQueryScorer;
 use crate::vector_storage::query_scorer::metric_query_scorer::MetricQueryScorer;
 use crate::vector_storage::query_scorer::multi_metric_query_scorer::MultiMetricQueryScorer;
 use crate::vector_storage::query_scorer::sparse_metric_query_scorer::SparseMetricQueryScorer;
@@ -161,6 +162,9 @@ pub fn raw_sparse_scorer_impl<'a, TVectorStorage: SparseVectorStorageRead>(
         QueryVector::Nearest(_vector) => Err(OperationError::service_error(
             "Raw scorer must not be used for nearest queries",
         )),
+        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            "masked focus search is only supported for dense vectors",
+        )),
         QueryVector::RecommendBestScore(reco_query) => {
             let reco_query: RecoQuery<SparseVector> = reco_query.transform_into()?;
             let query_scorer = SparseCustomQueryScorer::<_, _>::new(
@@ -276,6 +280,15 @@ fn new_scorer_with_metric<
             );
             raw_scorer_from_query_scorer(query_scorer)
         }
+        QueryVector::NearestMasked(vector, dims) => {
+            let query_scorer = MaskedMetricQueryScorer::<_, TMetric, _>::new(
+                vector.try_into()?,
+                &dims,
+                vector_storage,
+                hardware_counter_cell,
+            );
+            raw_scorer_from_query_scorer(query_scorer)
+        }
         QueryVector::RecommendBestScore(reco_query) => {
             let reco_query: RecoQuery<DenseVector> = reco_query.transform_into()?;
             let query_scorer = CustomQueryScorer::<_, TMetric, _, _>::new(
@@ -343,6 +356,9 @@ pub fn raw_turbo_scorer_impl<'a>(
             vector_storage,
             hardware_counter,
         )),
+        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            "masked focus search is not supported with turbo storage",
+        )),
         QueryVector::RecommendBestScore(reco_query) => {
             let reco_query: RecoQuery<DenseVector> = reco_query.transform_into()?;
             let query_scorer = TurboCustomQueryScorer::new(
@@ -402,6 +418,9 @@ pub fn raw_turbo_multi_scorer_impl<'a>(
                 TurboMultiQueryScorer::new(&vector.try_into()?, vector_storage, hardware_counter);
             raw_scorer_from_query_scorer(query_scorer)
         }
+        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            "masked focus search is not supported for multivectors",
+        )),
         QueryVector::RecommendBestScore(reco_query) => {
             let reco_query: RecoQuery<MultiDenseVectorInternal> = reco_query.transform_into()?;
             let query_scorer = TurboMultiCustomQueryScorer::new(
@@ -511,6 +530,9 @@ fn new_multi_scorer_with_metric<
             );
             raw_scorer_from_query_scorer(query_scorer)
         }
+        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            "masked focus search is not supported for multivectors",
+        )),
         QueryVector::RecommendBestScore(reco_query) => {
             let reco_query: RecoQuery<MultiDenseVectorInternal> = reco_query.transform_into()?;
             let query_scorer = MultiCustomQueryScorer::<_, TMetric, _, _>::new(

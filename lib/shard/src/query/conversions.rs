@@ -460,6 +460,10 @@ impl From<QueryEnum> for grpc::QueryEnum {
                     grpc::Vector::from(vector.query),
                 )),
             },
+            QueryEnum::NearestMasked(_, _) => {
+                // Masked focus search has no representation on the dedicated search endpoints.
+                unimplemented!("masked focus search is only exposed through the query API")
+            }
             QueryEnum::RecommendBestScore(named) => grpc::QueryEnum {
                 query: Some(grpc::query_enum::Query::RecommendBestScore(
                     named.query.into(),
@@ -603,6 +607,11 @@ impl From<QueryEnum> for grpc::RawQuery {
 
         let variant = match query {
             QueryEnum::Nearest(named) => Variant::Nearest(grpc::RawVector::from(named.query)),
+            QueryEnum::NearestMasked(_, _) => {
+                // The internal shard-query proto has no masked-focus variant, so masked focus
+                // search cannot be dispatched to remote shards. It runs on local shards only.
+                unimplemented!("masked focus search is not supported across remote shards")
+            }
             QueryEnum::RecommendBestScore(named) => {
                 Variant::RecommendBestScore(grpc::raw_query::Recommend::from(named.query))
             }

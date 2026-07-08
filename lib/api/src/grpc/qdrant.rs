@@ -6549,10 +6549,14 @@ pub struct DimsFocus {
     pub dims: ::prost::alloc::vec::Vec<u32>,
     /// The maximum number of candidates to preselect with the full-vector search before re-scoring.
     ///
-    /// If not specified, the `limit` value is used.
+    /// If not specified, the `limit` value is used. Ignored when `masked` is true.
     #[prost(uint32, optional, tag = "2")]
     #[validate(range(max = 16_384))]
     pub candidates_limit: ::core::option::Option<u32>,
+    /// Compute the masked distance (over `dims` only) directly inside the index (HNSW) traversal,
+    /// instead of preselecting full-vector candidates and re-scoring them. Results are approximate.
+    #[prost(bool, tag = "3")]
+    pub masked: bool,
 }
 /// Options for including per-dimension score explanations into the search response.
 #[derive(validator::Validate)]

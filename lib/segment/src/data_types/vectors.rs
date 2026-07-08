@@ -839,6 +839,9 @@ impl<T: Validate> Validate for NamedQuery<T> {
 #[derive(Debug, Clone)]
 pub enum QueryVector {
     Nearest(VectorInternal),
+    /// Nearest neighbor search where the distance is computed only over a subset ("focus")
+    /// of the vector dimensions, directly inside the index traversal. Dense vectors only.
+    NearestMasked(VectorInternal, Vec<u32>),
     RecommendBestScore(RecoQuery<VectorInternal>),
     RecommendSumScores(RecoQuery<VectorInternal>),
     Discover(DiscoverQuery<VectorInternal>),
@@ -853,6 +856,9 @@ impl TransformInto<QueryVector, VectorInternal, VectorInternal> for QueryVector 
     {
         match self {
             QueryVector::Nearest(v) => f(v).map(QueryVector::Nearest),
+            QueryVector::NearestMasked(v, dims) => {
+                f(v).map(|v| QueryVector::NearestMasked(v, dims))
+            }
             QueryVector::RecommendBestScore(v) => {
                 Ok(QueryVector::RecommendBestScore(v.transform(&mut f)?))
             }

@@ -339,10 +339,12 @@ fn convert_query_with_inferred(
             let grpc::DimsFocus {
                 dims,
                 candidates_limit,
+                masked,
             } = focus;
             let focus = DimsFocus {
                 dims,
                 candidates_limit: candidates_limit.map(|x| x as usize),
+                masked,
             };
 
             Query::Vector(VectorQuery::NearestWithFocus(NearestWithFocus {

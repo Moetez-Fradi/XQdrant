@@ -4,7 +4,7 @@ use quantization::EncodedVectors;
 
 use super::quantized_custom_query_scorer::QuantizedCustomQueryScorer;
 use super::quantized_query_scorer::{InternalScorerUnsupported, QuantizedQueryScorer};
-use crate::common::operation_error::OperationResult;
+use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::primitive::PrimitiveVectorElement;
 use crate::data_types::vectors::{
     DenseVector, MultiDenseVectorInternal, QueryVector, VectorElementType, VectorElementTypeByte,
@@ -233,6 +233,9 @@ impl<'a> QuantizedScorerBuilder<'a> {
                 );
                 raw_scorer_from_query_scorer(query_scorer)
             }
+            QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+                "masked focus search is not supported with quantization",
+            )),
             QueryVector::RecommendBestScore(reco_query) => {
                 let reco_query: RecoQuery<DenseVector> = reco_query.transform_into()?;
                 let query_scorer = QuantizedCustomQueryScorer::<TElement, TMetric, _, _>::new(
@@ -323,6 +326,9 @@ impl<'a> QuantizedScorerBuilder<'a> {
                 );
                 raw_scorer_from_query_scorer(query_scorer)
             }
+            QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+                "masked focus search is not supported with quantization",
+            )),
             QueryVector::RecommendBestScore(reco_query) => {
                 let reco_query: RecoQuery<MultiDenseVectorInternal> =
                     reco_query.transform_into()?;
