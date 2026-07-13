@@ -233,7 +233,7 @@ impl<'a> QuantizedScorerBuilder<'a> {
                 );
                 raw_scorer_from_query_scorer(query_scorer)
             }
-            QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
                 "masked focus search is not supported with quantization",
             )),
             QueryVector::RecommendBestScore(reco_query) => {
@@ -326,7 +326,7 @@ impl<'a> QuantizedScorerBuilder<'a> {
                 );
                 raw_scorer_from_query_scorer(query_scorer)
             }
-            QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
                 "masked focus search is not supported with quantization",
             )),
             QueryVector::RecommendBestScore(reco_query) => {

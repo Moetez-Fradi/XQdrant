@@ -1005,6 +1005,7 @@ async fn test_random_sample_huge_limit_does_not_abort() {
         params: None,
         with_vector: false.into(),
         with_payload: false.into(),
+        dims_explained: None,
     };
 
     let result = collection

@@ -220,3 +220,7 @@ harness = false
 [[bench]]
 name = "facets"
 harness = false
+
+[[bench]]
+name = "masked_kernel_bench"
+harness = false

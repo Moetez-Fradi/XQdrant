@@ -1,0 +1,11 @@
+d_sub,kernel,ns_per_op
+32,repack,100.0115
+32,gather,52.6558
+128,repack,159.5809
+128,gather,143.3840
+192,repack,206.0851
+192,gather,338.5885
+384,repack,407.7228
+384,gather,322.7538
+768,repack,815.7671
+768,gather,433.7002

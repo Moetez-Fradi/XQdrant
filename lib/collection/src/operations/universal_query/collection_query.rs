@@ -222,6 +222,9 @@ pub struct DimsFocus {
     /// This is a real per-comparison speedup, but the results are approximate: the index
     /// graph was built for full vectors, so `candidates_limit` no longer applies.
     pub masked: bool,
+    /// Hybrid cutoff: layer `L` uses masked distance when `L < mask_from_layer`, else full.
+    /// Only meaningful with `masked = true`. `None` keeps legacy all-layers-masked behaviour.
+    pub mask_from_layer: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -535,14 +538,29 @@ impl VectorQuery<VectorInternal> {
                     dims,
                     candidates_limit,
                     masked,
+                    mask_from_layer,
                 } = focus;
+
+                if mask_from_layer.is_some() && !masked {
+                    return Err(CollectionError::bad_request(
+                        "mask_from_layer requires focus.masked = true.",
+                    ));
+                }
 
                 // Masked focus computes the reduced distance inside the index traversal,
                 // so it is a plain nearest-neighbor scoring query (no preselect + rescore).
                 if masked {
+                    let mask_from_layer = mask_from_layer.map(|layer| layer as usize);
+                    // mask_from_layer = 0 → no masking → identical to plain nearest.
+                    if mask_from_layer == Some(0) {
+                        return Ok(ScoringQuery::Vector(QueryEnum::Nearest(NamedQuery::new(
+                            nearest, using,
+                        ))));
+                    }
                     return Ok(ScoringQuery::Vector(QueryEnum::NearestMasked(
                         NamedQuery::new(nearest, using),
                         dims,
+                        mask_from_layer,
                     )));
                 }
 
@@ -843,7 +861,7 @@ impl CollectionQueryRequest {
     fn validate_dims_explained_support(query: Option<&ScoringQuery>) -> CollectionResult<()> {
         // Masked focus search scores inside the index traversal and does not retrieve the
         // full vectors needed to decompose the score, so explanations are not available.
-        if let Some(ScoringQuery::Vector(QueryEnum::NearestMasked(_, _))) = query {
+        if let Some(ScoringQuery::Vector(QueryEnum::NearestMasked(_, _, _))) = query {
             return Err(CollectionError::bad_request(
                 "with_dims_explained cannot be combined with masked focus search.",
             ));
@@ -908,5 +926,88 @@ impl CollectionQueryRequest {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod mask_from_layer_tests {
+    use super::*;
+
+    fn dense_focus_query(
+        masked: bool,
+        mask_from_layer: Option<u32>,
+    ) -> VectorQuery<VectorInternal> {
+        VectorQuery::NearestWithFocus(NearestWithFocus {
+            nearest: VectorInternal::Dense(vec![1.0, 2.0, 3.0, 4.0]),
+            focus: DimsFocus {
+                dims: vec![0, 2],
+                candidates_limit: None,
+                masked,
+                mask_from_layer,
+            },
+        })
+    }
+
+    #[test]
+    fn mask_from_layer_requires_masked() {
+        let err = dense_focus_query(false, Some(1))
+            .into_scoring_query(DEFAULT_VECTOR_NAME.to_owned(), 10)
+            .unwrap_err();
+        assert!(err.to_string().contains("mask_from_layer"));
+    }
+
+    #[test]
+    fn mask_from_layer_zero_becomes_plain_nearest() {
+        let scored = dense_focus_query(true, Some(0))
+            .into_scoring_query(DEFAULT_VECTOR_NAME.to_owned(), 10)
+            .unwrap();
+        assert!(matches!(
+            scored,
+            ScoringQuery::Vector(QueryEnum::Nearest(_))
+        ));
+    }
+
+    #[test]
+    fn omitted_mask_from_layer_is_legacy_full_mask() {
+        let scored = dense_focus_query(true, None)
+            .into_scoring_query(DEFAULT_VECTOR_NAME.to_owned(), 10)
+            .unwrap();
+        match scored {
+            ScoringQuery::Vector(QueryEnum::NearestMasked(_, _, None)) => {}
+            other => panic!("expected NearestMasked(..., None), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mask_from_layer_hybrid_is_threaded() {
+        let scored = dense_focus_query(true, Some(2))
+            .into_scoring_query(DEFAULT_VECTOR_NAME.to_owned(), 10)
+            .unwrap();
+        match scored {
+            ScoringQuery::Vector(QueryEnum::NearestMasked(_, _, Some(2))) => {}
+            other => panic!("expected NearestMasked(..., Some(2)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn masked_rejects_non_dense() {
+        let query = VectorQuery::NearestWithFocus(NearestWithFocus {
+            nearest: VectorInternal::MultiDense(
+                segment::data_types::vectors::MultiDenseVectorInternal::new(
+                    vec![1.0, 2.0, 3.0, 4.0],
+                    2,
+                ),
+            ),
+            focus: DimsFocus {
+                dims: vec![0],
+                candidates_limit: None,
+                masked: true,
+                mask_from_layer: Some(1),
+            },
+        });
+        let err = query
+            .into_scoring_query(DEFAULT_VECTOR_NAME.to_owned(), 10)
+            .unwrap_err();
+        assert!(err.to_string().contains("dense"));
     }
 }

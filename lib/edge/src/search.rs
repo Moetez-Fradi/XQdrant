@@ -110,7 +110,7 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
         };
 
         match &query_vector {
-            QueryVector::Nearest(_) | QueryVector::NearestMasked(_, _) => {
+            QueryVector::Nearest(_) | QueryVector::NearestMasked(_, _, _) => {
                 for point in &mut points {
                     point.score = distance.postprocess_score(point.score);
                 }

@@ -9,6 +9,7 @@ use crate::types::{MultiVectorComparator, MultiVectorConfig};
 use crate::vector_storage::VectorOffset;
 
 pub mod custom_query_scorer;
+pub mod masked_kernels;
 pub mod masked_metric_query_scorer;
 pub mod metric_query_scorer;
 pub mod multi_custom_query_scorer;

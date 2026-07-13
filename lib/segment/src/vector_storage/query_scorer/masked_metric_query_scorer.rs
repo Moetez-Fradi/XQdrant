@@ -1,12 +1,14 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::mem::{align_of, size_of};
 
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::generic_consts::Random;
 use common::typelevel::False;
 use common::types::{PointOffsetType, ScoreType};
 
+use super::masked_kernels::{self, MaskedKernelMode};
 use crate::data_types::primitive::PrimitiveVectorElement;
 use crate::data_types::vectors::{TypedDenseVector, VectorElementType};
 use crate::spaces::metric::Metric;
@@ -24,6 +26,10 @@ use crate::vector_storage::query_scorer::QueryScorer;
 /// The query is preprocessed exactly like a regular nearest search (e.g. L2-normalized for
 /// Cosine over *all* dimensions), and then the score sums only the terms of the focused
 /// dimensions. This keeps the scores consistent with the collection-level focus rescoring.
+///
+/// Kernel selection (X1): [`MaskedKernelMode`] — `repack` (default) copies focus dims into
+/// a scratch buffer then calls contiguous SIMD; `gather` scores in place (AVX2 `vgatherdps`
+/// on x86). Override with `XQDRANT_MASKED_KERNEL=gather|repack`.
 pub struct MaskedMetricQueryScorer<
     'a,
     TElement: PrimitiveVectorElement,
@@ -36,8 +42,9 @@ pub struct MaskedMetricQueryScorer<
     /// Focus dimension indexes, filtered to be within the vector bounds.
     dims: Vec<usize>,
     /// Reusable scratch buffer holding the focus dimensions of the vector being scored.
-    /// Avoids per-comparison allocations while reusing the (SIMD-accelerated) metric.
+    /// Used by the repack kernel; unused by gather (except non-f32 fallback).
     buffer: RefCell<TypedDenseVector<TElement>>,
+    kernel: MaskedKernelMode,
     metric: PhantomData<TMetric>,
     hardware_counter: HardwareCounterCell,
 }
@@ -53,7 +60,24 @@ impl<
         query: TypedDenseVector<VectorElementType>,
         dims: &[u32],
         vector_storage: &'a TVectorStorage,
+        hardware_counter: HardwareCounterCell,
+    ) -> Self {
+        Self::new_with_kernel(
+            query,
+            dims,
+            vector_storage,
+            hardware_counter,
+            MaskedKernelMode::from_env(),
+        )
+    }
+
+    /// Like [`Self::new`] but with an explicit kernel mode (used by tests / criterion).
+    pub fn new_with_kernel(
+        query: TypedDenseVector<VectorElementType>,
+        dims: &[u32],
+        vector_storage: &'a TVectorStorage,
         mut hardware_counter: HardwareCounterCell,
+        kernel: MaskedKernelMode,
     ) -> Self {
         let vector_dim = vector_storage.vector_dim();
 
@@ -90,19 +114,46 @@ impl<
             query,
             dims,
             buffer,
+            kernel,
             metric: PhantomData,
             hardware_counter,
         }
     }
 
-    /// Gather the focus dimensions of `vector` and score them against the masked query.
+    /// Score `vector` against the masked query using the configured kernel.
     #[inline]
     fn score_masked(&self, vector: &[TElement]) -> ScoreType {
+        match self.kernel {
+            MaskedKernelMode::Repack => self.score_repack(vector),
+            MaskedKernelMode::Gather => self.score_gather(vector),
+        }
+    }
+
+    #[inline]
+    fn score_repack(&self, vector: &[TElement]) -> ScoreType {
         let mut buffer = self.buffer.borrow_mut();
         for (slot, &dim) in buffer.iter_mut().zip(self.dims.iter()) {
             *slot = vector[dim];
         }
         TMetric::similarity(&self.query, &buffer)
+    }
+
+    #[inline]
+    fn score_gather(&self, vector: &[TElement]) -> ScoreType {
+        // Fast path: f32 gather kernels (Dot/Cosine/Euclid/Manhattan).
+        if size_of::<TElement>() == size_of::<f32>() && align_of::<TElement>() == align_of::<f32>()
+        {
+            let query_f32: &[f32] = bytemuck::cast_slice(&self.query);
+            let vector_f32: &[f32] = bytemuck::cast_slice(vector);
+            return masked_kernels::score_gather_f32(
+                TMetric::distance(),
+                query_f32,
+                vector_f32,
+                &self.dims,
+            );
+        }
+        // Non-f32: fall back to repack (contiguous metric still wins for half/byte).
+        self.score_repack(vector)
     }
 }
 
@@ -138,12 +189,30 @@ impl<
         let v1 = self.vector_storage.get_dense::<Random>(point_a);
         let v2 = self.vector_storage.get_dense::<Random>(point_b);
 
+        // Build a temporary masked view of point_a, then score point_b with the active kernel.
         let masked_a: TypedDenseVector<TElement> = self.dims.iter().map(|&dim| v1[dim]).collect();
-        let mut buffer = self.buffer.borrow_mut();
-        for (slot, &dim) in buffer.iter_mut().zip(self.dims.iter()) {
-            *slot = v2[dim];
+        match self.kernel {
+            MaskedKernelMode::Gather
+                if size_of::<TElement>() == size_of::<f32>()
+                    && align_of::<TElement>() == align_of::<f32>() =>
+            {
+                let query_f32: &[f32] = bytemuck::cast_slice(&masked_a);
+                let vector_f32: &[f32] = bytemuck::cast_slice(v2.as_ref());
+                masked_kernels::score_gather_f32(
+                    TMetric::distance(),
+                    query_f32,
+                    vector_f32,
+                    &self.dims,
+                )
+            }
+            _ => {
+                let mut buffer = self.buffer.borrow_mut();
+                for (slot, &dim) in buffer.iter_mut().zip(self.dims.iter()) {
+                    *slot = v2[dim];
+                }
+                TMetric::similarity(&masked_a, &buffer)
+            }
         }
-        TMetric::similarity(&masked_a, &buffer)
     }
 
     // Scoring raw bytes (the inline-vectors graph fast path) is not supported: that path
@@ -161,11 +230,13 @@ mod tests {
 
     use crate::data_types::vectors::{QueryVector, VectorInternal};
     use crate::types::Distance;
-    use crate::vector_storage::VectorStorage;
     use crate::vector_storage::dense::volatile_dense_vector_storage::new_volatile_dense_vector_storage;
-    use crate::vector_storage::new_raw_scorer;
+    use crate::vector_storage::{VectorStorage, new_raw_scorer};
 
-    fn build_storage(distance: Distance, points: &[Vec<f32>]) -> crate::vector_storage::VectorStorageEnum {
+    fn build_storage(
+        distance: Distance,
+        points: &[Vec<f32>],
+    ) -> crate::vector_storage::VectorStorageEnum {
         let hw = HardwareCounterCell::new();
         let dim = points[0].len();
         let mut storage = new_volatile_dense_vector_storage(dim, distance);
@@ -188,7 +259,8 @@ mod tests {
 
         let query = vec![1.0, 10.0, 100.0, 1000.0];
         let dims = vec![0u32, 2u32];
-        let masked = QueryVector::NearestMasked(VectorInternal::Dense(query.clone()), dims.clone());
+        let masked =
+            QueryVector::NearestMasked(VectorInternal::Dense(query.clone()), dims.clone(), None);
         let scorer = new_raw_scorer(masked, &storage, HardwareCounterCell::new()).unwrap();
 
         for (i, v) in points.iter().enumerate() {
@@ -224,7 +296,7 @@ mod tests {
             )
             .unwrap();
             let masked = new_raw_scorer(
-                QueryVector::NearestMasked(VectorInternal::Dense(query.clone()), all_dims),
+                QueryVector::NearestMasked(VectorInternal::Dense(query.clone()), all_dims, None),
                 &storage,
                 HardwareCounterCell::new(),
             )
@@ -251,10 +323,137 @@ mod tests {
         let masked = QueryVector::NearestMasked(
             VectorInternal::Dense(query.clone()),
             vec![1u32, 5u32, 9u32],
+            None,
         );
         let scorer = new_raw_scorer(masked, &storage, HardwareCounterCell::new()).unwrap();
 
         assert!((scorer.score_point(0) - 2.0).abs() < 1e-4);
         assert!((scorer.score_point(1) - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hybrid_scorer_switches_by_layer() {
+        use common::bitvec::BitVec;
+
+        use crate::index::hnsw_index::point_scorer::FilteredScorer;
+
+        let points = vec![
+            vec![1.0, 0.0, 100.0],
+            vec![0.0, 1.0, 100.0],
+            vec![1.0, 1.0, 0.0],
+        ];
+        let storage = build_storage(Distance::Dot, &points);
+        let deleted = BitVec::repeat(false, points.len());
+        let query = vec![1.0, 1.0, 1.0];
+        // Focus dims [0, 1] ignore the large third component.
+        let dims = vec![0u32, 1u32];
+
+        let mut hybrid = FilteredScorer::new(
+            QueryVector::NearestMasked(
+                VectorInternal::Dense(query.clone()),
+                dims,
+                Some(1), // mask only layer 0
+            ),
+            &storage,
+            None::<&crate::vector_storage::quantized::quantized_vectors::QuantizedVectors>,
+            None,
+            &deleted,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+
+        let full = new_raw_scorer(
+            QueryVector::Nearest(VectorInternal::Dense(query.clone())),
+            &storage,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+        let masked = new_raw_scorer(
+            QueryVector::NearestMasked(VectorInternal::Dense(query), vec![0, 1], None),
+            &storage,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+
+        // Layer 0 (< 1) → masked
+        hybrid.set_layer(0);
+        for i in 0..points.len() as PointOffsetType {
+            assert!(
+                (hybrid.score_point(i) - masked.score_point(i)).abs() < 1e-4,
+                "layer 0 should use masked distance at point {i}",
+            );
+        }
+
+        // Layer 1+ (≥ 1) → full
+        hybrid.set_layer(1);
+        for i in 0..points.len() as PointOffsetType {
+            assert!(
+                (hybrid.score_point(i) - full.score_point(i)).abs() < 1e-4,
+                "layer 1 should use full distance at point {i}",
+            );
+        }
+        hybrid.set_layer(5);
+        for i in 0..points.len() as PointOffsetType {
+            assert!((hybrid.score_point(i) - full.score_point(i)).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn masked_rejects_sparse_query_vector() {
+        use sparse::common::sparse_vector::SparseVector;
+
+        let storage = build_storage(Distance::Dot, &[vec![1.0, 2.0, 3.0]]);
+        let err = new_raw_scorer(
+            QueryVector::NearestMasked(
+                VectorInternal::Sparse(SparseVector::new(vec![0], vec![1.0]).unwrap()),
+                vec![0],
+                None,
+            ),
+            &storage,
+            HardwareCounterCell::new(),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn gather_kernel_matches_repack_on_scorer() {
+        use crate::spaces::simple::DotProductMetric;
+        use crate::vector_storage::query_scorer::QueryScorer;
+        use crate::vector_storage::query_scorer::masked_kernels::MaskedKernelMode;
+        use crate::vector_storage::query_scorer::masked_metric_query_scorer::MaskedMetricQueryScorer;
+
+        let points = vec![
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            vec![8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+        ];
+        let storage = build_storage(Distance::Dot, &points);
+        let query = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        let dims = [0u32, 2, 4, 7];
+
+        let dense = match &storage {
+            crate::vector_storage::VectorStorageEnum::DenseVolatile(vs) => vs,
+            _ => panic!("expected volatile dense"),
+        };
+
+        let repack = MaskedMetricQueryScorer::<_, DotProductMetric, _>::new_with_kernel(
+            query.clone(),
+            &dims,
+            dense,
+            HardwareCounterCell::new(),
+            MaskedKernelMode::Repack,
+        );
+        let gather = MaskedMetricQueryScorer::<_, DotProductMetric, _>::new_with_kernel(
+            query,
+            &dims,
+            dense,
+            HardwareCounterCell::new(),
+            MaskedKernelMode::Gather,
+        );
+
+        for i in 0..points.len() as PointOffsetType {
+            let a = QueryScorer::score_stored(&repack, i);
+            let b = QueryScorer::score_stored(&gather, i);
+            assert!((a - b).abs() < 1e-4, "point {i}: repack={a} gather={b}");
+        }
     }
 }

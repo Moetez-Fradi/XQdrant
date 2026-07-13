@@ -60,7 +60,7 @@ fn check_query_vector(
     vector_config: &VectorDataConfig,
 ) -> OperationResult<()> {
     match query_vector {
-        QueryVector::Nearest(vector) | QueryVector::NearestMasked(vector, _) => {
+        QueryVector::Nearest(vector) | QueryVector::NearestMasked(vector, _, _) => {
             check_vector_against_config(VectorRef::from(vector), vector_config)?
         }
         QueryVector::RecommendBestScore(reco_query)
@@ -94,7 +94,7 @@ fn check_query_sparse_vector(
     vector_config: &SparseVectorDataConfig,
 ) -> OperationResult<()> {
     match query_vector {
-        QueryVector::Nearest(vector) | QueryVector::NearestMasked(vector, _) => {
+        QueryVector::Nearest(vector) | QueryVector::NearestMasked(vector, _, _) => {
             check_sparse_vector_against_config(VectorRef::from(vector), vector_config)?
         }
         QueryVector::RecommendBestScore(reco_query)

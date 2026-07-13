@@ -6557,6 +6557,12 @@ pub struct DimsFocus {
     /// instead of preselecting full-vector candidates and re-scoring them. Results are approximate.
     #[prost(bool, tag = "3")]
     pub masked: bool,
+    /// Hybrid masked traversal cutoff (only meaningful when `masked` is true).
+    /// Layer L uses masked distance when L \< mask_from_layer, otherwise full distance.
+    /// Layer 0 is the bottom/base layer. Omit with masked=true to mask every layer (legacy).
+    /// 0 = no masking (plain nearest); >= top_layer+1 = all layers masked.
+    #[prost(uint32, optional, tag = "4")]
+    pub mask_from_layer: ::core::option::Option<u32>,
 }
 /// Options for including per-dimension score explanations into the search response.
 #[derive(validator::Validate)]

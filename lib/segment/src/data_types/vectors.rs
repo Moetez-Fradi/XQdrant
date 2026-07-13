@@ -841,7 +841,10 @@ pub enum QueryVector {
     Nearest(VectorInternal),
     /// Nearest neighbor search where the distance is computed only over a subset ("focus")
     /// of the vector dimensions, directly inside the index traversal. Dense vectors only.
-    NearestMasked(VectorInternal, Vec<u32>),
+    ///
+    /// The optional third field is `mask_from_layer`: `None` masks all layers; `Some(n)`
+    /// uses masked distance on layers `L < n` and full distance on coarser layers.
+    NearestMasked(VectorInternal, Vec<u32>, Option<usize>),
     RecommendBestScore(RecoQuery<VectorInternal>),
     RecommendSumScores(RecoQuery<VectorInternal>),
     Discover(DiscoverQuery<VectorInternal>),
@@ -856,8 +859,8 @@ impl TransformInto<QueryVector, VectorInternal, VectorInternal> for QueryVector 
     {
         match self {
             QueryVector::Nearest(v) => f(v).map(QueryVector::Nearest),
-            QueryVector::NearestMasked(v, dims) => {
-                f(v).map(|v| QueryVector::NearestMasked(v, dims))
+            QueryVector::NearestMasked(v, dims, mask_from_layer) => {
+                f(v).map(|v| QueryVector::NearestMasked(v, dims, mask_from_layer))
             }
             QueryVector::RecommendBestScore(v) => {
                 Ok(QueryVector::RecommendBestScore(v.transform(&mut f)?))

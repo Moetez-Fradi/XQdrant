@@ -125,8 +125,8 @@ impl Generalizer for QueryEnum {
     fn remove_details(&self) -> Self {
         match self {
             QueryEnum::Nearest(nearest) => QueryEnum::Nearest(nearest.remove_details()),
-            QueryEnum::NearestMasked(nearest, dims) => {
-                QueryEnum::NearestMasked(nearest.remove_details(), dims.clone())
+            QueryEnum::NearestMasked(nearest, dims, mask_from_layer) => {
+                QueryEnum::NearestMasked(nearest.remove_details(), dims.clone(), *mask_from_layer)
             }
             QueryEnum::RecommendBestScore(recommend) => {
                 QueryEnum::RecommendBestScore(recommend.remove_details())

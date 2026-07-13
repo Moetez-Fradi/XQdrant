@@ -54,7 +54,16 @@ use crate::vector_storage::{VectorStorageEnum, new_raw_scorer};
 ///  └─────────────────┘
 /// ```
 pub struct FilteredScorer<'a> {
+    /// Primary scorer. For hybrid masked search this is the *full*-distance scorer;
+    /// otherwise it is the sole scorer used for the whole traversal.
     raw_scorer: Box<dyn RawScorer + 'a>,
+    /// Optional masked-distance scorer used on layers `current_layer < mask_from_layer`.
+    masked_layer_scorer: Option<Box<dyn RawScorer + 'a>>,
+    /// Layers strictly below this cutoff use [`Self::masked_layer_scorer`].
+    /// Ignored when `masked_layer_scorer` is `None`.
+    mask_from_layer: usize,
+    /// Current HNSW layer being searched. Updated via [`Self::set_layer`].
+    current_layer: usize,
     filters: ScorerFilters<'a>,
     /// Temporary buffer for scores.
     scores_buffer: Vec<ScoreType>,
@@ -120,6 +129,10 @@ impl<'a> FilteredScorer<'a> {
     /// Create a new filtered scorer.
     ///
     /// If present, `quantized_vectors` will be used for scoring, otherwise `vectors` will be used.
+    ///
+    /// For hybrid masked queries (`NearestMasked` with `Some(mask_from_layer)` where the cutoff
+    /// is > 0), both a full-distance and a masked-distance scorer are built. Call
+    /// [`Self::set_layer`] before scoring each HNSW layer so the correct scorer is selected.
     pub fn new<V, Q>(
         query: QueryVector,
         vectors: &'a V,
@@ -132,17 +145,53 @@ impl<'a> FilteredScorer<'a> {
         V: VectorStorageRead + RawScorerBuilder,
         Q: QuantizedVectorsRead,
     {
+        let filters = ScorerFilters {
+            filter_context,
+            point_deleted,
+            vec_deleted: vectors.deleted_vector_bitslice(),
+        };
+
+        // Hybrid Option 2: full distance on coarse layers, masked on bottom layers.
+        // Build both scorers once; layer selection happens via `set_layer` (no per-compare branch
+        // beyond a single integer compare + pointer pick).
+        if let QueryVector::NearestMasked(vector, dims, Some(mask_from_layer)) = &query
+            && *mask_from_layer > 0
+        {
+            if quantized_vectors.is_some() {
+                return Err(
+                    crate::common::operation_error::OperationError::validation_error(
+                        "masked focus search is not supported with quantization",
+                    ),
+                );
+            }
+            let full_scorer = vectors.build_raw_scorer(
+                QueryVector::Nearest(vector.clone()),
+                hardware_counter.fork(),
+            )?;
+            let masked_scorer = vectors.build_raw_scorer(
+                QueryVector::NearestMasked(vector.clone(), dims.clone(), None),
+                hardware_counter,
+            )?;
+            return Ok(FilteredScorer {
+                raw_scorer: full_scorer,
+                masked_layer_scorer: Some(masked_scorer),
+                mask_from_layer: *mask_from_layer,
+                current_layer: 0,
+                filters,
+                scores_buffer: Vec::new(),
+            });
+        }
+
         let raw_scorer = match quantized_vectors {
             Some(quantized_vectors) => quantized_vectors.raw_scorer(query, hardware_counter)?,
             None => vectors.build_raw_scorer(query, hardware_counter)?,
         };
         Ok(FilteredScorer {
             raw_scorer,
-            filters: ScorerFilters {
-                filter_context,
-                point_deleted,
-                vec_deleted: vectors.deleted_vector_bitslice(),
-            },
+            masked_layer_scorer: None,
+            mask_from_layer: 0,
+            current_layer: 0,
+            filters,
             scores_buffer: Vec::new(),
         })
     }
@@ -179,6 +228,9 @@ impl<'a> FilteredScorer<'a> {
         };
         Ok(FilteredScorer {
             raw_scorer,
+            masked_layer_scorer: None,
+            mask_from_layer: 0,
+            current_layer: 0,
             filters: ScorerFilters {
                 filter_context,
                 point_deleted,
@@ -192,7 +244,8 @@ impl<'a> FilteredScorer<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if [`new_raw_scorer`] fails.
+    /// Panics if [`new_raw_scorer`] fails. Does not set up hybrid layer scorers;
+    /// use [`Self::new`] for Option-2 hybrid masked queries in tests.
     #[cfg(feature = "testing")]
     pub fn new_for_test(
         vector: QueryVector,
@@ -201,6 +254,9 @@ impl<'a> FilteredScorer<'a> {
     ) -> Self {
         FilteredScorer {
             raw_scorer: new_raw_scorer(vector, vector_storage, HardwareCounterCell::new()).unwrap(),
+            masked_layer_scorer: None,
+            mask_from_layer: 0,
+            current_layer: 0,
             filters: ScorerFilters {
                 filter_context: None,
                 point_deleted,
@@ -210,8 +266,27 @@ impl<'a> FilteredScorer<'a> {
         }
     }
 
-    pub fn raw_scorer(&self) -> &dyn RawScorer {
+    /// Select the active distance function for the given HNSW layer.
+    ///
+    /// For hybrid masked search, layers `L < mask_from_layer` use masked distance and
+    /// coarser layers use full distance. No-op when no hybrid scorer is configured.
+    #[inline]
+    pub fn set_layer(&mut self, layer: usize) {
+        self.current_layer = layer;
+    }
+
+    #[inline]
+    fn active_raw_scorer(&self) -> &dyn RawScorer {
+        if let Some(masked) = self.masked_layer_scorer.as_ref()
+            && self.current_layer < self.mask_from_layer
+        {
+            return masked.as_ref();
+        }
         self.raw_scorer.as_ref()
+    }
+
+    pub fn raw_scorer(&self) -> &dyn RawScorer {
+        self.active_raw_scorer()
     }
 
     pub fn filters(&self) -> &ScorerFilters<'a> {
@@ -221,7 +296,7 @@ impl<'a> FilteredScorer<'a> {
     /// Return [`FilteredBytesScorer`] if the underlying scorer supports it.
     pub fn scorer_bytes(&self) -> Option<FilteredBytesScorer<'_>> {
         Some(FilteredBytesScorer {
-            scorer_bytes: self.raw_scorer.scorer_bytes()?,
+            scorer_bytes: self.active_raw_scorer().scorer_bytes()?,
             filters: self.filters.as_borrowed(),
         })
     }
@@ -257,19 +332,28 @@ impl<'a> FilteredScorer<'a> {
             self.scores_buffer.resize(point_ids.len(), 0.0);
         }
 
-        self.raw_scorer
-            .score_points(point_ids, &mut self.scores_buffer[..point_ids.len()]);
+        let scores = &mut self.scores_buffer[..point_ids.len()];
+        let use_masked =
+            self.masked_layer_scorer.is_some() && self.current_layer < self.mask_from_layer;
+        if use_masked {
+            self.masked_layer_scorer
+                .as_ref()
+                .unwrap()
+                .score_points(point_ids, scores);
+        } else {
+            self.raw_scorer.score_points(point_ids, scores);
+        }
 
         std::iter::zip(point_ids, &self.scores_buffer)
             .map(|(&idx, &score)| ScoredPointOffset { idx, score })
     }
 
     pub fn score_point(&self, point_id: PointOffsetType) -> ScoreType {
-        self.raw_scorer.score_point(point_id)
+        self.active_raw_scorer().score_point(point_id)
     }
 
     pub fn score_internal(&self, point_a: PointOffsetType, point_b: PointOffsetType) -> ScoreType {
-        self.raw_scorer.score_internal(point_a, point_b)
+        self.active_raw_scorer().score_internal(point_a, point_b)
     }
 }
 

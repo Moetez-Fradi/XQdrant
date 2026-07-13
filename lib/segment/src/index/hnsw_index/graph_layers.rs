@@ -114,6 +114,7 @@ pub trait GraphLayersBase {
         points_scorer: &mut FilteredScorer,
         is_stopped: &AtomicBool,
     ) -> CancellableResult<FixedLengthPriorityQueue<ScoredPointOffset>> {
+        points_scorer.set_layer(level);
         let mut visited_list = self.get_visited_list_from_pool();
         visited_list.check_and_update_visited(level_entry.idx);
 
@@ -160,6 +161,7 @@ pub trait GraphLayersBase {
         points_scorer: &mut FilteredScorer,
         is_stopped: &AtomicBool,
     ) -> CancellableResult<FixedLengthPriorityQueue<ScoredPointOffset>> {
+        points_scorer.set_layer(level);
         // Each node in `hop1_visited_list` either:
         // a) Non-deleted node that going to be scored and added to
         //    `search_context` for further expansion. (or already added)
@@ -258,6 +260,7 @@ pub trait GraphLayersBase {
         let mut level_entry = entry_point;
         for level in rev_range(top_level, target_level) {
             check_process_stopped(is_stopped)?;
+            points_scorer.set_layer(level);
             let search_result =
                 self.search_entry_on_level(level_entry, level, points_scorer, &mut links_buffer);
             level_entry = search_result.idx;
@@ -267,6 +270,7 @@ pub trait GraphLayersBase {
             Ok(result)
         } else {
             // If no levels, return the entry point with it's score
+            points_scorer.set_layer(target_level);
             Ok(ScoredPointOffset {
                 idx: entry_point,
                 score: points_scorer.score_point(entry_point),
@@ -1002,5 +1006,79 @@ mod tests {
         let graph_search = search_in_graph(&query, top, &vector_holder, &graph_layers);
 
         assert_eq!(reference_top.into_sorted_vec(), graph_search);
+    }
+
+    #[test]
+    fn hybrid_mask_from_layer_matches_extremes() {
+        use crate::data_types::vectors::{QueryVector, VectorInternal};
+
+        let mut rng = StdRng::seed_from_u64(7);
+        let (holder, graph) = create_graph_layer_fixture(
+            200,
+            M,
+            16,
+            GraphLinksFormat::Plain,
+            true,
+            false,
+            Distance::Dot,
+            &mut rng,
+        );
+
+        let query_vec: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1).collect();
+        let dims: Vec<u32> = (0..8).collect();
+        let top = 10;
+        let ef = 32;
+
+        let search = |query: QueryVector| {
+            graph
+                .search(
+                    top,
+                    ef,
+                    SearchAlgorithm::Hnsw,
+                    holder.scorer(query),
+                    None,
+                    &DEFAULT_STOPPED,
+                )
+                .unwrap()
+        };
+
+        let plain = search(QueryVector::Nearest(VectorInternal::Dense(
+            query_vec.clone(),
+        )));
+        // Large cutoff masks every layer → same as legacy focus.masked (None).
+        let fully_masked = search(QueryVector::NearestMasked(
+            VectorInternal::Dense(query_vec.clone()),
+            dims.clone(),
+            None,
+        ));
+        let large_cutoff = search(QueryVector::NearestMasked(
+            VectorInternal::Dense(query_vec.clone()),
+            dims.clone(),
+            Some(usize::MAX),
+        ));
+        let intermediate = search(QueryVector::NearestMasked(
+            VectorInternal::Dense(query_vec),
+            dims,
+            Some(1),
+        ));
+
+        assert_eq!(plain.len(), top);
+        assert_eq!(fully_masked.len(), top);
+        assert_eq!(large_cutoff.len(), top);
+        assert_eq!(intermediate.len(), top);
+
+        for (a, b) in fully_masked.iter().zip(large_cutoff.iter()) {
+            assert_eq!(a.idx, b.idx);
+            assert!((a.score - b.score).abs() < 1e-4);
+        }
+
+        for hit in &intermediate {
+            assert!(hit.score.is_finite());
+        }
+
+        // Intermediate (full coarse + masked base) should not collapse to empty / garbage.
+        // On this fixture it typically sits between the two extremes in recall sense;
+        // at minimum the result set is a valid top-k of the requested size.
+        assert_eq!(intermediate.len(), plain.len());
     }
 }

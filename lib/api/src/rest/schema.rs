@@ -817,6 +817,17 @@ pub struct DimsFocus {
     /// graph was built for full vectors. Defaults to false.
     #[serde(default)]
     pub masked: bool,
+
+    /// Hybrid masked traversal cutoff (only meaningful when `masked` is true).
+    ///
+    /// Layer `L` uses masked distance when `L < mask_from_layer`, otherwise full distance.
+    /// Layer 0 is the bottom/base layer. Omitting this field with `masked=true` keeps the
+    /// legacy behaviour of masking every layer.
+    ///
+    /// - `0` — no masking (identical to plain nearest)
+    /// - `>= top_layer + 1` — all layers masked (identical to legacy `masked=true`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_from_layer: Option<u32>,
 }
 
 /// Options for including per-dimension score explanations into the search response.

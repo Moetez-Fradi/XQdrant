@@ -341,7 +341,7 @@ where
                 prefiltered_points,
                 vector_query_context,
             ),
-            QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+            QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
                 "masked focus search is only supported for dense vectors",
             )),
             QueryVector::RecommendBestScore(_)

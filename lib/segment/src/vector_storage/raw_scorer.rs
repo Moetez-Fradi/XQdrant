@@ -162,7 +162,7 @@ pub fn raw_sparse_scorer_impl<'a, TVectorStorage: SparseVectorStorageRead>(
         QueryVector::Nearest(_vector) => Err(OperationError::service_error(
             "Raw scorer must not be used for nearest queries",
         )),
-        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+        QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
             "masked focus search is only supported for dense vectors",
         )),
         QueryVector::RecommendBestScore(reco_query) => {
@@ -280,7 +280,7 @@ fn new_scorer_with_metric<
             );
             raw_scorer_from_query_scorer(query_scorer)
         }
-        QueryVector::NearestMasked(vector, dims) => {
+        QueryVector::NearestMasked(vector, dims, _mask_from_layer) => {
             let query_scorer = MaskedMetricQueryScorer::<_, TMetric, _>::new(
                 vector.try_into()?,
                 &dims,
@@ -356,7 +356,7 @@ pub fn raw_turbo_scorer_impl<'a>(
             vector_storage,
             hardware_counter,
         )),
-        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+        QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
             "masked focus search is not supported with turbo storage",
         )),
         QueryVector::RecommendBestScore(reco_query) => {
@@ -418,7 +418,7 @@ pub fn raw_turbo_multi_scorer_impl<'a>(
                 TurboMultiQueryScorer::new(&vector.try_into()?, vector_storage, hardware_counter);
             raw_scorer_from_query_scorer(query_scorer)
         }
-        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+        QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
             "masked focus search is not supported for multivectors",
         )),
         QueryVector::RecommendBestScore(reco_query) => {
@@ -530,7 +530,7 @@ fn new_multi_scorer_with_metric<
             );
             raw_scorer_from_query_scorer(query_scorer)
         }
-        QueryVector::NearestMasked(_, _) => Err(OperationError::validation_error(
+        QueryVector::NearestMasked(_, _, _) => Err(OperationError::validation_error(
             "masked focus search is not supported for multivectors",
         )),
         QueryVector::RecommendBestScore(reco_query) => {

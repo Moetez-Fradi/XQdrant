@@ -10,8 +10,13 @@ pub enum QueryEnum {
     Nearest(NamedQuery<VectorInternal>),
     /// Nearest neighbor search scored on a subset ("focus") of the vector dimensions,
     /// with the masked distance computed inside the index traversal. Dense vectors only.
-    /// The second field holds the focus dimension indexes.
-    NearestMasked(NamedQuery<VectorInternal>, Vec<u32>),
+    ///
+    /// - Second field: focus dimension indexes.
+    /// - Third field: optional hybrid cutoff (`mask_from_layer`).
+    ///   `None` masks every layer (legacy `focus.masked=true`).
+    ///   `Some(n)` uses masked distance on layers `L < n` and full distance otherwise.
+    ///   (`Some(0)` is converted to plain [`QueryEnum::Nearest`] before this variant.)
+    NearestMasked(NamedQuery<VectorInternal>, Vec<u32>, Option<usize>),
     RecommendBestScore(NamedQuery<RecoQuery<VectorInternal>>),
     RecommendSumScores(NamedQuery<RecoQuery<VectorInternal>>),
     Discover(NamedQuery<DiscoverQuery<VectorInternal>>),
@@ -23,7 +28,7 @@ impl QueryEnum {
     pub fn get_vector_name(&self) -> &VectorName {
         match self {
             QueryEnum::Nearest(vector) => vector.get_name(),
-            QueryEnum::NearestMasked(vector, _) => vector.get_name(),
+            QueryEnum::NearestMasked(vector, _, _) => vector.get_name(),
             QueryEnum::RecommendBestScore(reco_query) => reco_query.get_name(),
             QueryEnum::RecommendSumScores(reco_query) => reco_query.get_name(),
             QueryEnum::Discover(discover_query) => discover_query.get_name(),
@@ -35,7 +40,7 @@ impl QueryEnum {
     /// Only when the distance is the scoring, this will return true.
     pub fn is_distance_scored(&self) -> bool {
         match self {
-            QueryEnum::Nearest(_) | QueryEnum::NearestMasked(_, _) => true,
+            QueryEnum::Nearest(_) | QueryEnum::NearestMasked(_, _, _) => true,
             QueryEnum::RecommendBestScore(_)
             | QueryEnum::RecommendSumScores(_)
             | QueryEnum::Discover(_)
@@ -46,7 +51,8 @@ impl QueryEnum {
 
     pub fn iterate_sparse(&self, mut f: impl FnMut(&VectorName, &SparseVector)) {
         match self {
-            QueryEnum::Nearest(named) | QueryEnum::NearestMasked(named, _) => match &named.query {
+            QueryEnum::Nearest(named) | QueryEnum::NearestMasked(named, _, _) => match &named.query
+            {
                 VectorInternal::Sparse(sparse_vector) => f(named.get_name(), sparse_vector),
                 VectorInternal::Dense(_) | VectorInternal::MultiDense(_) => {}
             },
@@ -95,7 +101,7 @@ impl QueryEnum {
     pub fn search_cost(&self) -> usize {
         match self {
             QueryEnum::Nearest(named_query) => search_cost([&named_query.query]),
-            QueryEnum::NearestMasked(named_query, _) => search_cost([&named_query.query]),
+            QueryEnum::NearestMasked(named_query, _, _) => search_cost([&named_query.query]),
             QueryEnum::RecommendBestScore(named_query) => {
                 search_cost(named_query.query.flat_iter())
             }
@@ -141,7 +147,9 @@ impl From<QueryEnum> for QueryVector {
     fn from(query: QueryEnum) -> Self {
         match query {
             QueryEnum::Nearest(named) => QueryVector::Nearest(named.query),
-            QueryEnum::NearestMasked(named, dims) => QueryVector::NearestMasked(named.query, dims),
+            QueryEnum::NearestMasked(named, dims, mask_from_layer) => {
+                QueryVector::NearestMasked(named.query, dims, mask_from_layer)
+            }
             QueryEnum::RecommendBestScore(named) => QueryVector::RecommendBestScore(named.query),
             QueryEnum::RecommendSumScores(named) => QueryVector::RecommendSumScores(named.query),
             QueryEnum::Discover(named) => QueryVector::Discover(named.query),

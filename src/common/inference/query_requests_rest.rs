@@ -249,6 +249,7 @@ fn convert_query_with_inferred(
                     dims: focus.dims,
                     candidates_limit: focus.candidates_limit,
                     masked: focus.masked,
+                    mask_from_layer: focus.mask_from_layer,
                 };
                 Ok(Query::Vector(VectorQuery::NearestWithFocus(
                     NearestWithFocus {
