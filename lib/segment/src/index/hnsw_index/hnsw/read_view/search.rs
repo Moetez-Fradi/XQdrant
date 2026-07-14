@@ -202,7 +202,7 @@ where
                     vector_query_context,
                 ),
                 QueryVector::Nearest(_)
-                | QueryVector::NearestMasked(_, _, _)
+                | QueryVector::NearestMasked(_, _, _, _, _)
                 | QueryVector::RecommendBestScore(_)
                 | QueryVector::RecommendSumScores(_)
                 | QueryVector::Context(_)

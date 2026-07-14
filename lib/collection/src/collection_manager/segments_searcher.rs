@@ -547,7 +547,7 @@ impl From<&QueryEnum> for SearchType {
     fn from(query: &QueryEnum) -> Self {
         match query {
             QueryEnum::Nearest(_) => Self::Nearest,
-            QueryEnum::NearestMasked(_, _, _) => Self::Nearest,
+            QueryEnum::NearestMasked(_, _, _, _, _) => Self::Nearest,
             QueryEnum::RecommendBestScore(_) => Self::RecommendBestScore,
             QueryEnum::RecommendSumScores(_) => Self::RecommendSumScores,
             QueryEnum::Discover(_) => Self::Discover,

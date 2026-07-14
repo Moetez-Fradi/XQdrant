@@ -1042,6 +1042,18 @@ message DimsFocus {
   // Layer 0 is the bottom/base layer. Omit with masked=true to mask every layer (legacy).
   // 0 = no masking (plain nearest); >= top_layer+1 = all layers masked.
   optional uint32 mask_from_layer = 4;
+
+  // After masked (or hybrid) HNSW traversal, re-score the returned top-k with full-vector
+  // distance and return those full scores. Only meaningful when `masked` is true.
+  // Defaults to false.
+  bool verify = 5;
+
+  // Weighted blend of full and masked similarity scores on masked (or Option-1 all-masked)
+  // layers: score = alpha * s_full + (1 - alpha) * s_focus. Must be in [0, 1].
+  // Only meaningful when `masked` is true. Omitted = no blend (current behaviour).
+  // Coarse layers under mask_from_layer stay full-only (no blend). Not a speedup alone —
+  // both scores are computed on blended compares; pair with mask_from_layer for latency.
+  optional float alpha = 6;
 }
 
 // Options for including per-dimension score explanations into the search response.

@@ -259,8 +259,13 @@ mod tests {
 
         let query = vec![1.0, 10.0, 100.0, 1000.0];
         let dims = vec![0u32, 2u32];
-        let masked =
-            QueryVector::NearestMasked(VectorInternal::Dense(query.clone()), dims.clone(), None);
+        let masked = QueryVector::NearestMasked(
+            VectorInternal::Dense(query.clone()),
+            dims.clone(),
+            None,
+            false,
+            None,
+        );
         let scorer = new_raw_scorer(masked, &storage, HardwareCounterCell::new()).unwrap();
 
         for (i, v) in points.iter().enumerate() {
@@ -296,7 +301,13 @@ mod tests {
             )
             .unwrap();
             let masked = new_raw_scorer(
-                QueryVector::NearestMasked(VectorInternal::Dense(query.clone()), all_dims, None),
+                QueryVector::NearestMasked(
+                    VectorInternal::Dense(query.clone()),
+                    all_dims,
+                    None,
+                    false,
+                    None,
+                ),
                 &storage,
                 HardwareCounterCell::new(),
             )
@@ -323,6 +334,8 @@ mod tests {
         let masked = QueryVector::NearestMasked(
             VectorInternal::Dense(query.clone()),
             vec![1u32, 5u32, 9u32],
+            None,
+            false,
             None,
         );
         let scorer = new_raw_scorer(masked, &storage, HardwareCounterCell::new()).unwrap();
@@ -353,6 +366,8 @@ mod tests {
                 VectorInternal::Dense(query.clone()),
                 dims,
                 Some(1), // mask only layer 0
+                false,
+                None,
             ),
             &storage,
             None::<&crate::vector_storage::quantized::quantized_vectors::QuantizedVectors>,
@@ -369,7 +384,7 @@ mod tests {
         )
         .unwrap();
         let masked = new_raw_scorer(
-            QueryVector::NearestMasked(VectorInternal::Dense(query), vec![0, 1], None),
+            QueryVector::NearestMasked(VectorInternal::Dense(query), vec![0, 1], None, false, None),
             &storage,
             HardwareCounterCell::new(),
         )
@@ -399,6 +414,169 @@ mod tests {
     }
 
     #[test]
+    fn alpha_zero_matches_masked_on_all_layers() {
+        use common::bitvec::BitVec;
+
+        use crate::index::hnsw_index::point_scorer::FilteredScorer;
+
+        let points = vec![
+            vec![1.0, 0.0, 100.0],
+            vec![0.0, 1.0, 100.0],
+            vec![1.0, 1.0, 0.0],
+        ];
+        let storage = build_storage(Distance::Dot, &points);
+        let deleted = BitVec::repeat(false, points.len());
+        let query = vec![1.0, 1.0, 1.0];
+        let dims = vec![0u32, 1u32];
+
+        let mut blend = FilteredScorer::new(
+            QueryVector::NearestMasked(
+                VectorInternal::Dense(query.clone()),
+                dims.clone(),
+                None,
+                false,
+                Some(ordered_float::OrderedFloat(0.0)),
+            ),
+            &storage,
+            None::<&crate::vector_storage::quantized::quantized_vectors::QuantizedVectors>,
+            None,
+            &deleted,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+        let masked = new_raw_scorer(
+            QueryVector::NearestMasked(VectorInternal::Dense(query), dims, None, false, None),
+            &storage,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+
+        for layer in [0usize, 1, 5] {
+            blend.set_layer(layer);
+            for i in 0..points.len() as PointOffsetType {
+                assert!(
+                    (blend.score_point(i) - masked.score_point(i)).abs() < 1e-4,
+                    "alpha=0 layer {layer} point {i}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alpha_one_matches_full_on_all_layers() {
+        use common::bitvec::BitVec;
+
+        use crate::index::hnsw_index::point_scorer::FilteredScorer;
+
+        let points = vec![
+            vec![1.0, 0.0, 100.0],
+            vec![0.0, 1.0, 100.0],
+            vec![1.0, 1.0, 0.0],
+        ];
+        let storage = build_storage(Distance::Dot, &points);
+        let deleted = BitVec::repeat(false, points.len());
+        let query = vec![1.0, 1.0, 1.0];
+        let dims = vec![0u32, 1u32];
+
+        let mut blend = FilteredScorer::new(
+            QueryVector::NearestMasked(
+                VectorInternal::Dense(query.clone()),
+                dims,
+                None,
+                false,
+                Some(ordered_float::OrderedFloat(1.0)),
+            ),
+            &storage,
+            None::<&crate::vector_storage::quantized::quantized_vectors::QuantizedVectors>,
+            None,
+            &deleted,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+        let full = new_raw_scorer(
+            QueryVector::Nearest(VectorInternal::Dense(query)),
+            &storage,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+
+        for layer in [0usize, 3] {
+            blend.set_layer(layer);
+            for i in 0..points.len() as PointOffsetType {
+                assert!(
+                    (blend.score_point(i) - full.score_point(i)).abs() < 1e-4,
+                    "alpha=1 layer {layer} point {i}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hybrid_alpha_blends_only_masked_layers() {
+        use common::bitvec::BitVec;
+
+        use crate::index::hnsw_index::point_scorer::FilteredScorer;
+
+        let points = vec![
+            vec![1.0, 0.0, 100.0],
+            vec![0.0, 1.0, 100.0],
+            vec![1.0, 1.0, 0.0],
+        ];
+        let storage = build_storage(Distance::Dot, &points);
+        let deleted = BitVec::repeat(false, points.len());
+        let query = vec![1.0, 1.0, 1.0];
+        let dims = vec![0u32, 1u32];
+        let alpha = 0.25_f32;
+
+        let mut hybrid = FilteredScorer::new(
+            QueryVector::NearestMasked(
+                VectorInternal::Dense(query.clone()),
+                dims.clone(),
+                Some(1),
+                false,
+                Some(ordered_float::OrderedFloat(alpha)),
+            ),
+            &storage,
+            None::<&crate::vector_storage::quantized::quantized_vectors::QuantizedVectors>,
+            None,
+            &deleted,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+        let full = new_raw_scorer(
+            QueryVector::Nearest(VectorInternal::Dense(query.clone())),
+            &storage,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+        let masked = new_raw_scorer(
+            QueryVector::NearestMasked(VectorInternal::Dense(query), dims, None, false, None),
+            &storage,
+            HardwareCounterCell::new(),
+        )
+        .unwrap();
+
+        // Layer 0 (< 1) → blend
+        hybrid.set_layer(0);
+        for i in 0..points.len() as PointOffsetType {
+            let expected = alpha * full.score_point(i) + (1.0 - alpha) * masked.score_point(i);
+            assert!(
+                (hybrid.score_point(i) - expected).abs() < 1e-4,
+                "blended layer 0 point {i}",
+            );
+        }
+
+        // Layer ≥ 1 → full only (no blend)
+        hybrid.set_layer(1);
+        for i in 0..points.len() as PointOffsetType {
+            assert!(
+                (hybrid.score_point(i) - full.score_point(i)).abs() < 1e-4,
+                "full layer 1 point {i}",
+            );
+        }
+    }
+
+    #[test]
     fn masked_rejects_sparse_query_vector() {
         use sparse::common::sparse_vector::SparseVector;
 
@@ -407,6 +585,8 @@ mod tests {
             QueryVector::NearestMasked(
                 VectorInternal::Sparse(SparseVector::new(vec![0], vec![1.0]).unwrap()),
                 vec![0],
+                None,
+                false,
                 None,
             ),
             &storage,

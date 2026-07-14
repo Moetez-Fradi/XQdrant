@@ -828,6 +828,23 @@ pub struct DimsFocus {
     /// - `>= top_layer + 1` — all layers masked (identical to legacy `masked=true`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_from_layer: Option<u32>,
+
+    /// After masked (or hybrid) HNSW traversal, re-score the returned top-k with full-vector
+    /// distance and return those full scores. Only meaningful when `masked` is true.
+    /// Defaults to false (masked scores are returned as-is).
+    #[serde(default)]
+    pub verify: bool,
+
+    /// Weighted blend of full and masked similarity scores on masked layers:
+    /// `alpha * s_full + (1 - alpha) * s_focus` (higher-is-better RawScorer polarity).
+    ///
+    /// Must be in `[0, 1]`. Only meaningful when `masked` is true. Omitted = no blend
+    /// (current behaviour). With `mask_from_layer`, coarse (full) layers stay full-only;
+    /// only masked layers blend. Computing the blend needs both scores — not a speedup
+    /// alone; pair with `mask_from_layer` for latency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 0.0, max = 1.0))]
+    pub alpha: Option<f32>,
 }
 
 /// Options for including per-dimension score explanations into the search response.

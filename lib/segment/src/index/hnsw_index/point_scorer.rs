@@ -54,19 +54,25 @@ use crate::vector_storage::{VectorStorageEnum, new_raw_scorer};
 ///  └─────────────────┘
 /// ```
 pub struct FilteredScorer<'a> {
-    /// Primary scorer. For hybrid masked search this is the *full*-distance scorer;
+    /// Primary scorer. For hybrid / blended masked search this is the *full*-distance scorer;
     /// otherwise it is the sole scorer used for the whole traversal.
     raw_scorer: Box<dyn RawScorer + 'a>,
-    /// Optional masked-distance scorer used on layers `current_layer < mask_from_layer`.
+    /// Optional masked-distance scorer used on layers `current_layer < mask_from_layer`
+    /// (pure masked, or the focus half of an Option-4 blend).
     masked_layer_scorer: Option<Box<dyn RawScorer + 'a>>,
-    /// Layers strictly below this cutoff use [`Self::masked_layer_scorer`].
+    /// Layers strictly below this cutoff use the masked (or blend) path.
     /// Ignored when `masked_layer_scorer` is `None`.
+    /// For all-layers masked + `alpha`, this is `usize::MAX` so every layer blends.
     mask_from_layer: usize,
     /// Current HNSW layer being searched. Updated via [`Self::set_layer`].
     current_layer: usize,
+    /// Option 4: when `Some(α)`, score = `α·s_full + (1-α)·s_focus` on focus layers.
+    alpha: Option<f32>,
     filters: ScorerFilters<'a>,
     /// Temporary buffer for scores.
     scores_buffer: Vec<ScoreType>,
+    /// Scratch for the masked half when blending batches.
+    blend_scores_buffer: Vec<ScoreType>,
 }
 
 pub struct ScorerFilters<'a> {
@@ -131,8 +137,9 @@ impl<'a> FilteredScorer<'a> {
     /// If present, `quantized_vectors` will be used for scoring, otherwise `vectors` will be used.
     ///
     /// For hybrid masked queries (`NearestMasked` with `Some(mask_from_layer)` where the cutoff
-    /// is > 0), both a full-distance and a masked-distance scorer are built. Call
-    /// [`Self::set_layer`] before scoring each HNSW layer so the correct scorer is selected.
+    /// is > 0), or for Option-4 `alpha` blends, both a full-distance and a masked-distance
+    /// scorer are built. Call [`Self::set_layer`] before scoring each HNSW layer so the correct
+    /// scorer (or blend) is selected.
     pub fn new<V, Q>(
         query: QueryVector,
         vectors: &'a V,
@@ -151,35 +158,45 @@ impl<'a> FilteredScorer<'a> {
             vec_deleted: vectors.deleted_vector_bitslice(),
         };
 
-        // Hybrid Option 2: full distance on coarse layers, masked on bottom layers.
-        // Build both scorers once; layer selection happens via `set_layer` (no per-compare branch
-        // beyond a single integer compare + pointer pick).
-        if let QueryVector::NearestMasked(vector, dims, Some(mask_from_layer)) = &query
-            && *mask_from_layer > 0
-        {
-            if quantized_vectors.is_some() {
-                return Err(
-                    crate::common::operation_error::OperationError::validation_error(
-                        "masked focus search is not supported with quantization",
-                    ),
-                );
+        // Dual-scorer path: Option 2 hybrid (mask_from_layer > 0) and/or Option 4 alpha blend.
+        // - Hybrid without alpha: masked layers use pure masked; coarse layers use full.
+        // - Hybrid with alpha: masked layers blend; coarse layers stay full-only.
+        // - All-masked with alpha: every layer blends (cutoff = usize::MAX).
+        if let QueryVector::NearestMasked(vector, dims, mask_from_layer, _verify, alpha) = &query {
+            let needs_dual = match (mask_from_layer, alpha) {
+                (Some(n), _) if *n > 0 => true,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if needs_dual {
+                if quantized_vectors.is_some() {
+                    return Err(
+                        crate::common::operation_error::OperationError::validation_error(
+                            "masked focus search is not supported with quantization",
+                        ),
+                    );
+                }
+                let full_scorer = vectors.build_raw_scorer(
+                    QueryVector::Nearest(vector.clone()),
+                    hardware_counter.fork(),
+                )?;
+                let masked_scorer = vectors.build_raw_scorer(
+                    QueryVector::NearestMasked(vector.clone(), dims.clone(), None, false, None),
+                    hardware_counter,
+                )?;
+                // None cutoff + alpha → blend on every layer.
+                let cutoff = mask_from_layer.unwrap_or(usize::MAX);
+                return Ok(FilteredScorer {
+                    raw_scorer: full_scorer,
+                    masked_layer_scorer: Some(masked_scorer),
+                    mask_from_layer: cutoff,
+                    current_layer: 0,
+                    alpha: alpha.map(|a| a.into_inner()),
+                    filters,
+                    scores_buffer: Vec::new(),
+                    blend_scores_buffer: Vec::new(),
+                });
             }
-            let full_scorer = vectors.build_raw_scorer(
-                QueryVector::Nearest(vector.clone()),
-                hardware_counter.fork(),
-            )?;
-            let masked_scorer = vectors.build_raw_scorer(
-                QueryVector::NearestMasked(vector.clone(), dims.clone(), None),
-                hardware_counter,
-            )?;
-            return Ok(FilteredScorer {
-                raw_scorer: full_scorer,
-                masked_layer_scorer: Some(masked_scorer),
-                mask_from_layer: *mask_from_layer,
-                current_layer: 0,
-                filters,
-                scores_buffer: Vec::new(),
-            });
         }
 
         let raw_scorer = match quantized_vectors {
@@ -191,8 +208,10 @@ impl<'a> FilteredScorer<'a> {
             masked_layer_scorer: None,
             mask_from_layer: 0,
             current_layer: 0,
+            alpha: None,
             filters,
             scores_buffer: Vec::new(),
+            blend_scores_buffer: Vec::new(),
         })
     }
 
@@ -231,12 +250,14 @@ impl<'a> FilteredScorer<'a> {
             masked_layer_scorer: None,
             mask_from_layer: 0,
             current_layer: 0,
+            alpha: None,
             filters: ScorerFilters {
                 filter_context,
                 point_deleted,
                 vec_deleted: vectors.deleted_vector_bitslice(),
             },
             scores_buffer: Vec::new(),
+            blend_scores_buffer: Vec::new(),
         })
     }
 
@@ -257,35 +278,56 @@ impl<'a> FilteredScorer<'a> {
             masked_layer_scorer: None,
             mask_from_layer: 0,
             current_layer: 0,
+            alpha: None,
             filters: ScorerFilters {
                 filter_context: None,
                 point_deleted,
                 vec_deleted: vector_storage.deleted_vector_bitslice(),
             },
             scores_buffer: Vec::new(),
+            blend_scores_buffer: Vec::new(),
         }
     }
 
     /// Select the active distance function for the given HNSW layer.
     ///
-    /// For hybrid masked search, layers `L < mask_from_layer` use masked distance and
-    /// coarser layers use full distance. No-op when no hybrid scorer is configured.
+    /// For hybrid masked search, layers `L < mask_from_layer` use masked distance (or
+    /// Option-4 blend when `alpha` is set) and coarser layers use full distance.
+    /// No-op when no dual scorer is configured.
     #[inline]
     pub fn set_layer(&mut self, layer: usize) {
         self.current_layer = layer;
     }
 
     #[inline]
+    fn on_focus_layer(&self) -> bool {
+        self.masked_layer_scorer.is_some() && self.current_layer < self.mask_from_layer
+    }
+
+    #[inline]
+    fn should_blend(&self) -> bool {
+        self.alpha.is_some() && self.on_focus_layer()
+    }
+
+    #[inline]
+    fn blend_scores(alpha: f32, full: ScoreType, focus: ScoreType) -> ScoreType {
+        alpha * full + (1.0 - alpha) * focus
+    }
+
+    #[inline]
     fn active_raw_scorer(&self) -> &dyn RawScorer {
-        if let Some(masked) = self.masked_layer_scorer.as_ref()
-            && self.current_layer < self.mask_from_layer
-        {
-            return masked.as_ref();
+        if self.on_focus_layer() && !self.should_blend() {
+            return self.masked_layer_scorer.as_ref().unwrap().as_ref();
         }
         self.raw_scorer.as_ref()
     }
 
     pub fn raw_scorer(&self) -> &dyn RawScorer {
+        // Blended compares have no single RawScorer; expose the focus scorer for
+        // introspection, matching prior hybrid "active scorer" semantics when not blending.
+        if self.should_blend() {
+            return self.masked_layer_scorer.as_ref().unwrap().as_ref();
+        }
         self.active_raw_scorer()
     }
 
@@ -295,6 +337,9 @@ impl<'a> FilteredScorer<'a> {
 
     /// Return [`FilteredBytesScorer`] if the underlying scorer supports it.
     pub fn scorer_bytes(&self) -> Option<FilteredBytesScorer<'_>> {
+        if self.should_blend() {
+            return None;
+        }
         Some(FilteredBytesScorer {
             scorer_bytes: self.active_raw_scorer().scorer_bytes()?,
             filters: self.filters.as_borrowed(),
@@ -328,14 +373,30 @@ impl<'a> FilteredScorer<'a> {
         &mut self,
         point_ids: &[PointOffsetType],
     ) -> impl Iterator<Item = ScoredPointOffset> {
+        let blend = self.should_blend();
+        let on_focus = self.on_focus_layer();
+        let alpha = self.alpha;
+
         if self.scores_buffer.len() < point_ids.len() {
             self.scores_buffer.resize(point_ids.len(), 0.0);
         }
 
         let scores = &mut self.scores_buffer[..point_ids.len()];
-        let use_masked =
-            self.masked_layer_scorer.is_some() && self.current_layer < self.mask_from_layer;
-        if use_masked {
+        if blend {
+            let alpha = alpha.unwrap();
+            if self.blend_scores_buffer.len() < point_ids.len() {
+                self.blend_scores_buffer.resize(point_ids.len(), 0.0);
+            }
+            self.raw_scorer.score_points(point_ids, scores);
+            let focus_scores = &mut self.blend_scores_buffer[..point_ids.len()];
+            self.masked_layer_scorer
+                .as_ref()
+                .unwrap()
+                .score_points(point_ids, focus_scores);
+            for (full, focus) in scores.iter_mut().zip(focus_scores.iter()) {
+                *full = Self::blend_scores(alpha, *full, *focus);
+            }
+        } else if on_focus {
             self.masked_layer_scorer
                 .as_ref()
                 .unwrap()
@@ -349,10 +410,28 @@ impl<'a> FilteredScorer<'a> {
     }
 
     pub fn score_point(&self, point_id: PointOffsetType) -> ScoreType {
+        if let Some(alpha) = self.alpha.filter(|_| self.on_focus_layer()) {
+            let full = self.raw_scorer.score_point(point_id);
+            let focus = self
+                .masked_layer_scorer
+                .as_ref()
+                .unwrap()
+                .score_point(point_id);
+            return Self::blend_scores(alpha, full, focus);
+        }
         self.active_raw_scorer().score_point(point_id)
     }
 
     pub fn score_internal(&self, point_a: PointOffsetType, point_b: PointOffsetType) -> ScoreType {
+        if let Some(alpha) = self.alpha.filter(|_| self.on_focus_layer()) {
+            let full = self.raw_scorer.score_internal(point_a, point_b);
+            let focus = self
+                .masked_layer_scorer
+                .as_ref()
+                .unwrap()
+                .score_internal(point_a, point_b);
+            return Self::blend_scores(alpha, full, focus);
+        }
         self.active_raw_scorer().score_internal(point_a, point_b)
     }
 }

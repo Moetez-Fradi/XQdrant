@@ -842,9 +842,19 @@ pub enum QueryVector {
     /// Nearest neighbor search where the distance is computed only over a subset ("focus")
     /// of the vector dimensions, directly inside the index traversal. Dense vectors only.
     ///
-    /// The optional third field is `mask_from_layer`: `None` masks all layers; `Some(n)`
-    /// uses masked distance on layers `L < n` and full distance on coarser layers.
-    NearestMasked(VectorInternal, Vec<u32>, Option<usize>),
+    /// - Third field (`mask_from_layer`): `None` masks all layers; `Some(n)` uses masked
+    ///   distance on layers `L < n` and full distance on coarser layers.
+    /// - Fourth field (`verify`): when true, re-score the returned top-k with full-vector
+    ///   distance after traversal (returned scores are then full-distance).
+    /// - Fifth field (`alpha`): when `Some(α)`, blended score `α·s_full + (1-α)·s_focus`
+    ///   on masked layers (`None` = no blend). Coarse hybrid layers stay full-only.
+    NearestMasked(
+        VectorInternal,
+        Vec<u32>,
+        Option<usize>,
+        bool,
+        Option<ordered_float::OrderedFloat<f32>>,
+    ),
     RecommendBestScore(RecoQuery<VectorInternal>),
     RecommendSumScores(RecoQuery<VectorInternal>),
     Discover(DiscoverQuery<VectorInternal>),
@@ -859,8 +869,8 @@ impl TransformInto<QueryVector, VectorInternal, VectorInternal> for QueryVector 
     {
         match self {
             QueryVector::Nearest(v) => f(v).map(QueryVector::Nearest),
-            QueryVector::NearestMasked(v, dims, mask_from_layer) => {
-                f(v).map(|v| QueryVector::NearestMasked(v, dims, mask_from_layer))
+            QueryVector::NearestMasked(v, dims, mask_from_layer, verify, alpha) => {
+                f(v).map(|v| QueryVector::NearestMasked(v, dims, mask_from_layer, verify, alpha))
             }
             QueryVector::RecommendBestScore(v) => {
                 Ok(QueryVector::RecommendBestScore(v.transform(&mut f)?))

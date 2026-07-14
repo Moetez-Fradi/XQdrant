@@ -341,12 +341,16 @@ fn convert_query_with_inferred(
                 candidates_limit,
                 masked,
                 mask_from_layer,
+                verify,
+                alpha,
             } = focus;
             let focus = DimsFocus {
                 dims,
                 candidates_limit: candidates_limit.map(|x| x as usize),
                 masked,
                 mask_from_layer,
+                verify,
+                alpha,
             };
 
             Query::Vector(VectorQuery::NearestWithFocus(NearestWithFocus {

@@ -154,7 +154,7 @@ impl LocalShard {
                 let distance = collection_params.get_distance(vector_name).unwrap();
                 let processed_res = vector_res.into_iter().map(|mut scored_point| {
                     match req.query {
-                        QueryEnum::Nearest(_) | QueryEnum::NearestMasked(_, _, _) => {
+                        QueryEnum::Nearest(_) | QueryEnum::NearestMasked(_, _, _, _, _) => {
                             scored_point.score = distance.postprocess_score(scored_point.score);
                         }
                         // Don't post-process if we are dealing with custom scoring

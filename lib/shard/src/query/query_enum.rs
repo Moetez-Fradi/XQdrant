@@ -16,7 +16,17 @@ pub enum QueryEnum {
     ///   `None` masks every layer (legacy `focus.masked=true`).
     ///   `Some(n)` uses masked distance on layers `L < n` and full distance otherwise.
     ///   (`Some(0)` is converted to plain [`QueryEnum::Nearest`] before this variant.)
-    NearestMasked(NamedQuery<VectorInternal>, Vec<u32>, Option<usize>),
+    /// - Fourth field: `verify` — when true, re-score the returned top-k with full-vector
+    ///   distance after masked / hybrid traversal (returned scores are then full-distance).
+    /// - Fifth field: `alpha` — when `Some(α)`, blend `α·s_full + (1-α)·s_focus` on
+    ///   masked layers (`None` = no blend). Coarse hybrid layers stay full-only.
+    NearestMasked(
+        NamedQuery<VectorInternal>,
+        Vec<u32>,
+        Option<usize>,
+        bool,
+        Option<ordered_float::OrderedFloat<f32>>,
+    ),
     RecommendBestScore(NamedQuery<RecoQuery<VectorInternal>>),
     RecommendSumScores(NamedQuery<RecoQuery<VectorInternal>>),
     Discover(NamedQuery<DiscoverQuery<VectorInternal>>),
@@ -28,7 +38,7 @@ impl QueryEnum {
     pub fn get_vector_name(&self) -> &VectorName {
         match self {
             QueryEnum::Nearest(vector) => vector.get_name(),
-            QueryEnum::NearestMasked(vector, _, _) => vector.get_name(),
+            QueryEnum::NearestMasked(vector, _, _, _, _) => vector.get_name(),
             QueryEnum::RecommendBestScore(reco_query) => reco_query.get_name(),
             QueryEnum::RecommendSumScores(reco_query) => reco_query.get_name(),
             QueryEnum::Discover(discover_query) => discover_query.get_name(),
@@ -40,7 +50,7 @@ impl QueryEnum {
     /// Only when the distance is the scoring, this will return true.
     pub fn is_distance_scored(&self) -> bool {
         match self {
-            QueryEnum::Nearest(_) | QueryEnum::NearestMasked(_, _, _) => true,
+            QueryEnum::Nearest(_) | QueryEnum::NearestMasked(_, _, _, _, _) => true,
             QueryEnum::RecommendBestScore(_)
             | QueryEnum::RecommendSumScores(_)
             | QueryEnum::Discover(_)
@@ -51,11 +61,12 @@ impl QueryEnum {
 
     pub fn iterate_sparse(&self, mut f: impl FnMut(&VectorName, &SparseVector)) {
         match self {
-            QueryEnum::Nearest(named) | QueryEnum::NearestMasked(named, _, _) => match &named.query
-            {
-                VectorInternal::Sparse(sparse_vector) => f(named.get_name(), sparse_vector),
-                VectorInternal::Dense(_) | VectorInternal::MultiDense(_) => {}
-            },
+            QueryEnum::Nearest(named) | QueryEnum::NearestMasked(named, _, _, _, _) => {
+                match &named.query {
+                    VectorInternal::Sparse(sparse_vector) => f(named.get_name(), sparse_vector),
+                    VectorInternal::Dense(_) | VectorInternal::MultiDense(_) => {}
+                }
+            }
             QueryEnum::RecommendBestScore(reco_query)
             | QueryEnum::RecommendSumScores(reco_query) => {
                 let name = reco_query.get_name();
@@ -101,7 +112,7 @@ impl QueryEnum {
     pub fn search_cost(&self) -> usize {
         match self {
             QueryEnum::Nearest(named_query) => search_cost([&named_query.query]),
-            QueryEnum::NearestMasked(named_query, _, _) => search_cost([&named_query.query]),
+            QueryEnum::NearestMasked(named_query, _, _, _, _) => search_cost([&named_query.query]),
             QueryEnum::RecommendBestScore(named_query) => {
                 search_cost(named_query.query.flat_iter())
             }
@@ -147,8 +158,8 @@ impl From<QueryEnum> for QueryVector {
     fn from(query: QueryEnum) -> Self {
         match query {
             QueryEnum::Nearest(named) => QueryVector::Nearest(named.query),
-            QueryEnum::NearestMasked(named, dims, mask_from_layer) => {
-                QueryVector::NearestMasked(named.query, dims, mask_from_layer)
+            QueryEnum::NearestMasked(named, dims, mask_from_layer, verify, alpha) => {
+                QueryVector::NearestMasked(named.query, dims, mask_from_layer, verify, alpha)
             }
             QueryEnum::RecommendBestScore(named) => QueryVector::RecommendBestScore(named.query),
             QueryEnum::RecommendSumScores(named) => QueryVector::RecommendSumScores(named.query),

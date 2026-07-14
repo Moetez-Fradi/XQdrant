@@ -1050,16 +1050,22 @@ mod tests {
             VectorInternal::Dense(query_vec.clone()),
             dims.clone(),
             None,
+            false,
+            None,
         ));
         let large_cutoff = search(QueryVector::NearestMasked(
             VectorInternal::Dense(query_vec.clone()),
             dims.clone(),
             Some(usize::MAX),
+            false,
+            None,
         ));
         let intermediate = search(QueryVector::NearestMasked(
             VectorInternal::Dense(query_vec),
             dims,
             Some(1),
+            false,
+            None,
         ));
 
         assert_eq!(plain.len(), top);

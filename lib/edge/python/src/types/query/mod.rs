@@ -78,7 +78,7 @@ impl<'py> IntoPyObject<'py> for PyQuery {
                 using,
             },
 
-            QueryEnum::NearestMasked(_, _, _) => {
+            QueryEnum::NearestMasked(_, _, _, _, _) => {
                 unimplemented!("masked focus search is not exposed to the edge Python bindings")
             }
 
@@ -134,7 +134,7 @@ impl Repr for PyQuery {
             QueryEnum::Nearest(NamedQuery { query, using }) => {
                 ("Nearest", PyNamedVectorInternal::wrap_ref(query), using)
             }
-            QueryEnum::NearestMasked(NamedQuery { query, using }, _, _) => (
+            QueryEnum::NearestMasked(NamedQuery { query, using }, _, _, _, _) => (
                 "NearestMasked",
                 PyNamedVectorInternal::wrap_ref(query),
                 using,

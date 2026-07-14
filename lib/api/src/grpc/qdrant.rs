@@ -6541,7 +6541,7 @@ pub struct NearestInputWithFocus {
 /// Only supported for dense vectors.
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DimsFocus {
     /// Dimension indexes of the vector to focus the scoring on.
     #[prost(uint32, repeated, tag = "1")]
@@ -6563,6 +6563,18 @@ pub struct DimsFocus {
     /// 0 = no masking (plain nearest); >= top_layer+1 = all layers masked.
     #[prost(uint32, optional, tag = "4")]
     pub mask_from_layer: ::core::option::Option<u32>,
+    /// After masked (or hybrid) HNSW traversal, re-score the returned top-k with full-vector
+    /// distance and return those full scores. Only meaningful when `masked` is true.
+    /// Defaults to false.
+    #[prost(bool, tag = "5")]
+    pub verify: bool,
+    /// Weighted blend of full and masked similarity scores on masked (or Option-1 all-masked)
+    /// layers: score = alpha * s_full + (1 - alpha) * s_focus. Must be in \[0, 1\].
+    /// Only meaningful when `masked` is true. Omitted = no blend (current behaviour).
+    /// Coarse layers under mask_from_layer stay full-only (no blend). Not a speedup alone —
+    /// both scores are computed on blended compares; pair with mask_from_layer for latency.
+    #[prost(float, optional, tag = "6")]
+    pub alpha: ::core::option::Option<f32>,
 }
 /// Options for including per-dimension score explanations into the search response.
 #[derive(validator::Validate)]
