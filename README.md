@@ -1,13 +1,13 @@
 # XQdrant
 
-**Explainable, focus-aware vector search — a research fork of [Qdrant](https://github.com/qdrant/qdrant).**
+**Explainable, focus-aware vector search. a research fork of [Qdrant](https://github.com/qdrant/qdrant).**
 
 Vector databases return a single similarity score and no reason for it. XQdrant
-adds two capabilities to Qdrant's Query API and measures, honestly, what they cost:
+adds two capabilities to Qdrant's Query API and measures what they cost:
 
-1. **Attribution** — `with_dims_explained`: each hit comes back with its exact
+1. **Attribution**: `with_dims_explained`: each hit comes back with its exact
    top-*m* per-dimension score breakdown, computed in the engine.
-2. **Focused search** — `focus.dims`: score (and traverse HNSW) using only a
+2. **Focused search**: `focus.dims`: score (and traverse HNSW) using only a
    chosen subset of dimensions, with a hybrid mode that keeps full-distance
    routing on the upper layers (`mask_from_layer`) and an optional full-distance
    re-check (`verify`).
@@ -96,7 +96,7 @@ Benchmarks, harness and the experiment index (each claim → script):
 
 ---
 
-## Open questions — help wanted
+## Open questions
 
 - Can a masked distance ever beat contiguous SIMD, e.g. with a dims-major
   layout or per-query repacked segments?
@@ -104,11 +104,4 @@ Benchmarks, harness and the experiment index (each claim → script):
   quantization (e.g. TurboQuant 1-bit) on upper layers with higher precision on layer 0.
 - Is per-dimension attribution useful to real users, or should it target
   named-vector / multivector "aspects" instead?
-- Which piece, if any, would be worth upstreaming — and in what shape?
-
-## Author
-
-Moetez Fradi — open to feedback, collaboration and internships.
-Find me on the [Qdrant Discord](https://qdrant.to/discord).
-
-Licensed Apache-2.0, like upstream Qdrant.
+- Which piece, if any, would be worth upstreaming, and in what shape?
