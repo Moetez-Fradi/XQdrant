@@ -70,7 +70,7 @@ Build and run like upstream Qdrant (`cargo build --release`, binary
 | **Attribution is cheap** | +0.3 ms in-engine, independent of *m*; ~1.8× faster end to end than extracting it client-side (D = 768, 1536). Ranking unchanged. |
 | **The ceiling is the data, not the index** | Neighbors in a subspace are mostly *not* neighbors in the full space. On SIFT1M at 10% of dims, masked search matches the exact subspace/full-space overlap (0.012 vs 0.013). |
 | **Masked HNSW finds subspace neighbors** | Recall@10 ≥ 0.91 vs subspace ground truth when ≥ half the dims are in focus; 0.77 at a quarter, ~0.4 at a tenth. |
-| **No latency win yet** | Masked search runs at 0.67–0.85× plain speed. A masked distance over 25% of dims costs ~2× a full contiguous SIMD distance — per-distance cost, not traversal, is the bottleneck. |
+| **No latency win yet** | Masked search runs at 0.67–0.85× plain speed. A masked distance over 25% of dims costs ~2× a full contiguous SIMD distance, per-distance cost, not traversal, is the bottleneck. |
 | **Verify helps where data allows** | Overfetch + full rescoring lifts full-space recall 0.48 → 0.91 at 75% of dims, for < 0.3 ms. |
 
 Negative results (weighted full/masked blend never beats pure masking) are
@@ -89,10 +89,6 @@ reported in the paper too.
 | Per-layer scorer switch | `lib/segment/.../point_scorer.rs` (`FilteredScorer`), `graph_layers.rs` (`set_layer`) |
 | Verify rescore | `lib/segment/.../vector_index_search_common.rs` (`postprocess_search_result`) |
 | Kernel bench | `lib/segment/benches/masked_kernel_bench.rs` |
-
-Benchmarks, harness and the experiment index (each claim → script):
-[Moetez-Fradi/XAI › `DB_systems/`](https://github.com/Moetez-Fradi/XAI/tree/EDBT27/DB_systems)
-(paper source in `DB_systems/deliverable/`).
 
 ---
 
